@@ -11,10 +11,14 @@ struct Context {
     SDL_Window* window;
     SDL_GLContext gl_context;
     unsigned int uniform_transform;
+    int window_width = 800;
+    int window_height = 800;
+    bool is_fullscreen = false;
 };
 
 void render(Context&);
 void initialize(Context&);
+void toggle_fullscreen(Context&);
 
 int main() {
     if (SDL_Init(SDL_INIT_VIDEO) < 0) {
@@ -22,7 +26,8 @@ int main() {
         return 1;
     }
 
-    SDL_Window* window = SDL_CreateWindow("Cube", 100, 100, 800, 800, SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN); // make window 800x800 res
+    // Create window with OpenGL context, enable resizable window
+    SDL_Window* window = SDL_CreateWindow("Cube", 100, 100, 800, 800, SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
     if (!window) {
         std::cerr << "SDL_CreateWindow Error: " << SDL_GetError() << std::endl;
         SDL_Quit();
@@ -56,6 +61,22 @@ int main() {
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) {
                 running = false;
+            } else if (event.type == SDL_KEYDOWN) {
+                // Toggle fullscreen when 'F' is pressed
+                if (event.key.keysym.sym == SDLK_f) {
+                    toggle_fullscreen(context);
+                }
+                // Exit application when 'ESC' is pressed
+                else if (event.key.keysym.sym == SDLK_ESCAPE) {
+                    running = false;
+                }
+            } else if (event.type == SDL_WINDOWEVENT) {
+                // Handle window resizing
+                if (event.window.event == SDL_WINDOWEVENT_RESIZED) {
+                    context.window_width = event.window.data1;
+                    context.window_height = event.window.data2;
+                    glViewport(0, 0, context.window_width, context.window_height);
+                }
             }
         }
 
@@ -73,7 +94,7 @@ int main() {
 void read_file(const char* path, std::string& content) {
     std::ifstream file(path);
     if (!file.is_open()) {
-        std::cerr << "Failed to open shader: (make sure you have all shaders. .GLSL)" << path << std::endl; // what the fuk
+        std::cerr << "Failed to open shader: (make sure you have all shaders. .GLSL)" << path << std::endl;
         return;
     }
     std::stringstream buffer;
@@ -94,7 +115,7 @@ void compile_shader_from_file(const char* path, GLuint shader) {
     if (!status) {
         char info_buffer[1024];
         glGetShaderInfoLog(shader, sizeof(info_buffer), nullptr, info_buffer);
-        std::cerr << "Error compiling shader: " << info_buffer << "\nThe shader was:\n" << source << std::endl; // log shader errors if any
+        std::cerr << "Error compiling shader: " << info_buffer << "\nThe shader was:\n" << source << std::endl;
     }
 }
 
@@ -106,11 +127,11 @@ void link_shader_program(unsigned int program) {
     if (!status) {
         char info_buffer[1024];
         glGetProgramInfoLog(program, sizeof(info_buffer), nullptr, info_buffer);
-        std::cerr << "Error linking shader program: " << info_buffer << std::endl; // error linking shader to app?
+        std::cerr << "Error linking shader program: " << info_buffer << std::endl;
     }
 }
 
-const unsigned int triangles = 6 * 2;   // Number of triangles rendered
+const unsigned int triangles = 6 * 2;
 
 const unsigned int vertices_index = 0;
 const unsigned int colors_index = 1;
@@ -118,7 +139,8 @@ const unsigned int colors_index = 1;
 void initialize(Context& context) {
     glEnable(GL_DEPTH_TEST);
 
-    float vertices[] = { // cube
+    // Cube vertices and colors
+    float vertices[] = {
         // Front face
          0.5f,  0.5f,  0.5f,
         -0.5f,  0.5f,  0.5f,
@@ -202,7 +224,7 @@ void initialize(Context& context) {
     GLuint vertex_shader = glCreateShader(GL_VERTEX_SHADER);
     compile_shader_from_file("vertex.glsl", vertex_shader);
     GLuint fragment_shader = glCreateShader(GL_FRAGMENT_SHADER);
-    compile_shader_from_file("fragment.glsl", fragment_shader); // call shaders
+    compile_shader_from_file("fragment.glsl", fragment_shader);
 
     context.shader_program = glCreateProgram();
     glAttachShader(context.shader_program, vertex_shader);
@@ -210,6 +232,19 @@ void initialize(Context& context) {
     link_shader_program(context.shader_program);
 
     context.uniform_transform = glGetUniformLocation(context.shader_program, "transform");
+
+    // Set the viewport
+    glViewport(0, 0, context.window_width, context.window_height);
+}
+
+void toggle_fullscreen(Context& context) {
+    if (context.is_fullscreen) {
+        SDL_SetWindowFullscreen(context.window, 0); // Disable fullscreen
+        SDL_SetWindowSize(context.window, context.window_width, context.window_height);
+    } else {
+        SDL_SetWindowFullscreen(context.window, SDL_WINDOW_FULLSCREEN_DESKTOP); // Enable fullscreen
+    }
+    context.is_fullscreen = !context.is_fullscreen;
 }
 
 void update_fps(Context& context) {
@@ -222,7 +257,7 @@ void update_fps(Context& context) {
     if (now - last_update_time > 0.25) {
         double fps = frames_since_last_update / (now - last_update_time);
 
-        std::string title = "Cube (" + std::to_string(fps) + " FPS)"; // show fps precisely
+        std::string title = "Cube (" + std::to_string(fps) + " FPS)";
         SDL_SetWindowTitle(context.window, title.c_str());
 
         last_update_time = now;
@@ -257,5 +292,3 @@ void render(Context& context) {
     glBindVertexArray(context.vao);
     glDrawElements(GL_TRIANGLES, triangles * 3, GL_UNSIGNED_SHORT, nullptr);
 }
-
-// goodbye, world!
