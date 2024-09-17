@@ -1,0 +1,25 @@
+# Build files
+*.os
+*.elf
+*.out
+*.bin
+*.o
+*.a
+*.so
+*.exe
+
+# Compiled object files
+*.obj
+*.d
+*.dep
+
+# Temporary files
+*.tmp
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Directories
+build/
