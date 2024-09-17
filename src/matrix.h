@@ -1,7 +1,9 @@
+// matrix.h
 #ifndef MATRIX_H
 #define MATRIX_H
 
 #include <cmath>
+#include "vector.h"
 
 constexpr float pi = 3.141593f;
 
@@ -14,12 +16,13 @@ struct mat4f {
         x14, x24, x34, x44;
 };
 
-float* mat4f_gl(mat4f* m) {
-    // since its already in the column major, just return the
-    // first element.
-    return &m->x11;
-}
+// Declaration of mat4f_gl
+float* mat4f_gl(mat4f* m);
 
+mat4f mat4f_look_at(const vec3f& position, const vec3f& target, const vec3f& up);
+mat4f mat4f_perspective(float fov, float aspect, float near, float far);
+
+// Inline functions...
 inline mat4f mat4f_identity() {
     return mat4f{
         1, 0, 0, 0,
@@ -98,20 +101,30 @@ inline mat4f mat4f_rotate_x(float theta) {
     };
 }
 
-inline mat4f mat4f_perspective() {
-    const float
-        r = 0.5f,  // Half of the viewport width (at the near plane)
-        t = 0.5f,  // Half of the viewport height (at the near plane)
-        n = 1.0f,  // Distance to near clipping plane
-        f = 5.0f;  // Distance to far clipping plane
-
+// Function to create a perspective projection matrix
+inline mat4f mat4f_perspective(float fov, float aspect, float near, float far) {
+    float tanHalfFov = tanf(fov / 2.0f * pi / 180.0f);
+    
     return mat4f{
-        n / r, 0, 0, 0,
-        0, n / t, 0, 0,
-        0, 0, (-f - n) / (f - n), -1,
-        0, 0, (2 * f * n) / (n - f), 0,
+        1.0f / (aspect * tanHalfFov), 0, 0, 0,
+        0, 1.0f / tanHalfFov, 0, 0,
+        0, 0, -(far + near) / (far - near), -1.0f,
+        0, 0, -2.0f * far * near / (far - near), 0
     };
 }
 
-#endif
+// Function to create a look-at matrix
+inline mat4f mat4f_look_at(const vec3f& position, const vec3f& target, const vec3f& up) {
+    vec3f f = vec3f_normalize(vec3f_subtract(target, position));
+    vec3f r = vec3f_normalize(vec3f_cross(up, f));
+    vec3f u = vec3f_cross(f, r);
 
+    return mat4f{
+        r.x, u.x, -f.x, 0,
+        r.y, u.y, -f.y, 0,
+        r.z, u.z, -f.z, 0,
+        -vec3f_dot(r, position), -vec3f_dot(u, position), vec3f_dot(f, position), 1
+    };
+}
+
+#endif // MATRIX_H

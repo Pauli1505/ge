@@ -4,6 +4,7 @@
 #include <fstream>
 #include <sstream>
 #include "matrix.h"
+#include "vector.h"
 
 struct Context {
     unsigned int shader_program;
@@ -16,9 +17,92 @@ struct Context {
     bool is_fullscreen = false;
 };
 
-void render(Context&);
-void initialize(Context&);
-void toggle_fullscreen(Context&);
+class FreeCam {
+public:
+    FreeCam(float fov, float aspect, float near, float far)
+        : position({0.0f, 0.0f, 3.0f}), front({0.0f, 0.0f, -1.0f}), up({0.0f, 1.0f, 0.0f}),
+          yaw(-90.0f), pitch(0.0f), speed(2.5f), sensitivity(0.1f),
+          fov(fov), aspect(aspect), near(near), far(far), rightMouseHeld(false) {
+        right = vec3f_cross(front, up);
+    }
+
+void handleInput(const SDL_Event& event) {
+        if (event.type == SDL_MOUSEBUTTONDOWN && event.button.button == SDL_BUTTON_RIGHT) {
+            rightMouseHeld = true;
+            SDL_SetRelativeMouseMode(SDL_TRUE); // Capture mouse
+        }
+        if (event.type == SDL_MOUSEBUTTONUP && event.button.button == SDL_BUTTON_RIGHT) {
+            rightMouseHeld = false;
+            SDL_SetRelativeMouseMode(SDL_FALSE); // Release mouse
+        }
+        if (event.type == SDL_MOUSEMOTION && rightMouseHeld) {
+            float xOffset = event.motion.xrel * sensitivity;
+            float yOffset = event.motion.yrel * sensitivity;
+    
+            // Invert xOffset to correct camera movement
+            yaw -= xOffset;
+            // Optional: Invert yOffset if you find pitch movement counterintuitive
+            pitch -= yOffset;
+    
+            // Clamp pitch to avoid gimbal lock
+            if (pitch > 89.0f) pitch = 89.0f;
+            if (pitch < -89.0f) pitch = -89.0f;
+    
+            // Update front vector
+            vec3f direction;
+            direction.x = cosf(yaw * pi / 180.0f) * cosf(pitch * pi / 180.0f);
+            direction.y = sinf(pitch * pi / 180.0f);
+            direction.z = sinf(yaw * pi / 180.0f) * cosf(pitch * pi / 180.0f);
+            front = vec3f_normalize(direction);
+    
+            // Recalculate right and up vectors
+            right = vec3f_normalize(vec3f_cross(front, {0.0f, 1.0f, 0.0f}));
+            up = vec3f_cross(right, front);
+        }
+    }
+    
+
+    void update(float deltaTime) {
+        const Uint8* state = SDL_GetKeyboardState(nullptr);
+
+        float velocity = speed * deltaTime;
+        if (state[SDL_SCANCODE_W]) position = vec3f_add(position, vec3f_scale(front, velocity));
+        if (state[SDL_SCANCODE_S]) position = vec3f_subtract(position, vec3f_scale(front, velocity));
+        if (state[SDL_SCANCODE_A]) position = vec3f_subtract(position, vec3f_scale(right, velocity));
+        if (state[SDL_SCANCODE_D]) position = vec3f_add(position, vec3f_scale(right, velocity));
+    }
+
+    mat4f getViewMatrix() const {
+        return mat4f_look_at(position, vec3f_add(position, front), up);
+    }
+
+    mat4f getProjectionMatrix() const {
+        return mat4f_perspective(fov, aspect, near, far);
+    }
+
+private:
+    vec3f position;
+    vec3f front;
+    vec3f up;
+    vec3f right;
+    float yaw;
+    float pitch;
+    float speed;
+    float sensitivity;
+    float fov;
+    float aspect;
+    float near;
+    float far;
+    bool rightMouseHeld;
+};
+
+void render(Context& context, FreeCam& freeCam);
+void initialize(Context& context);
+void toggle_fullscreen(Context& context);
+void read_file(const char* path, std::string& content);
+void compile_shader_from_file(const char* path, GLuint shader);
+void link_shader_program(unsigned int program);
+void update_fps(Context& context);
 
 int main() {
     if (SDL_Init(SDL_INIT_VIDEO) < 0) {
@@ -26,7 +110,6 @@ int main() {
         return 1;
     }
 
-    // Create window with OpenGL context, enable resizable window
     SDL_Window* window = SDL_CreateWindow("Cube", 100, 100, 800, 800, SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
     if (!window) {
         std::cerr << "SDL_CreateWindow Error: " << SDL_GetError() << std::endl;
@@ -55,32 +138,40 @@ int main() {
     context.gl_context = gl_context;
     initialize(context);
 
+    FreeCam freeCam(45.0f, 800.0f / 800.0f, 0.1f, 100.0f);
+
+    Uint32 lastTime = SDL_GetTicks();
     bool running = true;
+
     while (running) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) {
                 running = false;
             } else if (event.type == SDL_KEYDOWN) {
-                // Toggle fullscreen when 'F' is pressed
                 if (event.key.keysym.sym == SDLK_f) {
                     toggle_fullscreen(context);
-                }
-                // Exit application when 'ESC' is pressed
-                else if (event.key.keysym.sym == SDLK_ESCAPE) {
+                } else if (event.key.keysym.sym == SDLK_ESCAPE) {
                     running = false;
                 }
             } else if (event.type == SDL_WINDOWEVENT) {
-                // Handle window resizing
                 if (event.window.event == SDL_WINDOWEVENT_RESIZED) {
                     context.window_width = event.window.data1;
                     context.window_height = event.window.data2;
                     glViewport(0, 0, context.window_width, context.window_height);
+                    freeCam = FreeCam(45.0f, (float)context.window_width / (float)context.window_height, 0.1f, 100.0f);
                 }
             }
+            freeCam.handleInput(event);
         }
 
-        render(context);
+        Uint32 currentTime = SDL_GetTicks();
+        float deltaTime = (currentTime - lastTime) / 1000.0f;
+        lastTime = currentTime;
+
+        freeCam.update(deltaTime);
+
+        render(context, freeCam);
 
         SDL_GL_SwapWindow(window);
     }
@@ -91,50 +182,57 @@ int main() {
     return 0;
 }
 
-void read_file(const char* path, std::string& content) {
-    std::ifstream file(path);
-    if (!file.is_open()) {
-        std::cerr << "Failed to open shader: (make sure you have all shaders. .GLSL)" << path << std::endl;
-        return;
-    }
-    std::stringstream buffer;
-    buffer << file.rdbuf();
-    content = buffer.str();
+void render(Context& context, FreeCam& freeCam) {
+    update_fps(context);
+
+    // Clear
+    glClearColor(0.1f, 0.12f, 0.2f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    glUseProgram(context.shader_program);
+
+    // Use free camera matrices
+    mat4f view = freeCam.getViewMatrix();
+    mat4f projection = freeCam.getProjectionMatrix();
+    mat4f transform = mat4f_multiply(projection, view);
+
+    glUniformMatrix4fv(context.uniform_transform, 1, GL_FALSE, mat4f_gl(&transform));
+
+    glBindVertexArray(context.vao);
+
+    // Define the indices
+    unsigned short indices[] = {
+        // Front face
+        0, 1, 2,
+        2, 3, 0,
+
+        // Top face
+        1, 5, 6,
+        6, 2, 1,
+
+        // Back face
+        5, 4, 7,
+        7, 6, 5,
+
+        // Bottom face
+        4, 0, 3,
+        3, 7, 4,
+
+        // Left face
+        1, 5, 4,
+        4, 0, 1,
+
+        // Right face
+        3, 2, 6,
+        6, 7, 3,
+    };
+
+    // Calculate number of indices
+    int numIndices = sizeof(indices) / sizeof(indices[0]);
+
+    glDrawElements(GL_TRIANGLES, numIndices, GL_UNSIGNED_SHORT, nullptr);
 }
 
-void compile_shader_from_file(const char* path, GLuint shader) {
-    std::string source;
-    read_file(path, source);
-    const char* source_c_str = source.c_str();
-
-    glShaderSource(shader, 1, &source_c_str, nullptr);
-    glCompileShader(shader);
-
-    GLint status;
-    glGetShaderiv(shader, GL_COMPILE_STATUS, &status);
-    if (!status) {
-        char info_buffer[1024];
-        glGetShaderInfoLog(shader, sizeof(info_buffer), nullptr, info_buffer);
-        std::cerr << "Error compiling shader: " << info_buffer << "\nThe shader was:\n" << source << std::endl;
-    }
-}
-
-void link_shader_program(unsigned int program) {
-    glLinkProgram(program);
-
-    GLint status;
-    glGetProgramiv(program, GL_LINK_STATUS, &status);
-    if (!status) {
-        char info_buffer[1024];
-        glGetProgramInfoLog(program, sizeof(info_buffer), nullptr, info_buffer);
-        std::cerr << "Error linking shader program: " << info_buffer << std::endl;
-    }
-}
-
-const unsigned int triangles = 6 * 2;
-
-const unsigned int vertices_index = 0;
-const unsigned int colors_index = 1;
 
 void initialize(Context& context) {
     glEnable(GL_DEPTH_TEST);
@@ -161,69 +259,63 @@ void initialize(Context& context) {
         0.5f, 0.3f, 1.0f,
 
         0.2f, 0.6f, 1.0f,
-        0.6f, 1.0f, 0.4f,
-        0.6f, 0.8f, 0.8f,
-        0.4f, 0.8f, 0.8f,
+        0.6f, 1.0f, 0.3f,
+        0.3f, 0.1f, 0.2f,
+        0.1f, 0.8f, 0.5f,
     };
 
-    unsigned short triangle_indices[] = {
-        // Front
+    unsigned short indices[] = {
+        // Front face
         0, 1, 2,
         2, 3, 0,
 
-        // Right
-        0, 3, 7,
-        7, 4, 0,
-
-        // Bottom
-        2, 6, 7,
-        7, 3, 2,
-
-        // Left
+        // Top face
         1, 5, 6,
         6, 2, 1,
 
-        // Back
-        4, 7, 6,
-        6, 5, 4,
+        // Back face
+        5, 4, 7,
+        7, 6, 5,
 
-        // Top
-        5, 1, 0,
-        0, 4, 5,
+        // Bottom face
+        4, 0, 3,
+        3, 7, 4,
+
+        // Left face
+        1, 5, 4,
+        4, 0, 1,
+
+        // Right face
+        3, 2, 6,
+        6, 7, 3,
     };
+
+    unsigned int vbo, ebo, color_vbo;
 
     glGenVertexArrays(1, &context.vao);
     glBindVertexArray(context.vao);
 
-    unsigned int triangles_ebo;
-    glGenBuffers(1, &triangles_ebo);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, triangles_ebo);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(triangle_indices), triangle_indices, GL_STATIC_DRAW);
-
-    unsigned int vertices_vbo;
-    glGenBuffers(1, &vertices_vbo);
-    glBindBuffer(GL_ARRAY_BUFFER, vertices_vbo);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, (void*)0);
+    glEnableVertexAttribArray(0);
 
-    glVertexAttribPointer(vertices_index, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
-    glEnableVertexAttribArray(vertices_index);
-
-    unsigned int colors_vbo;
-    glGenBuffers(1, &colors_vbo);
-    glBindBuffer(GL_ARRAY_BUFFER, colors_vbo);
+    glGenBuffers(1, &color_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, color_vbo);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertex_colors), vertex_colors, GL_STATIC_DRAW);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 0, (void*)0);
+    glEnableVertexAttribArray(1);
 
-    glVertexAttribPointer(colors_index, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
-    glEnableVertexAttribArray(colors_index);
+    glGenBuffers(1, &ebo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
 
-    // Unbind to prevent accidental modification
-    glBindVertexArray(0);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    // Load shaders
+    unsigned int vertex_shader = glCreateShader(GL_VERTEX_SHADER);
+    unsigned int fragment_shader = glCreateShader(GL_FRAGMENT_SHADER);
 
-    GLuint vertex_shader = glCreateShader(GL_VERTEX_SHADER);
     compile_shader_from_file("vertex.glsl", vertex_shader);
-    GLuint fragment_shader = glCreateShader(GL_FRAGMENT_SHADER);
     compile_shader_from_file("fragment.glsl", fragment_shader);
 
     context.shader_program = glCreateProgram();
@@ -233,62 +325,70 @@ void initialize(Context& context) {
 
     context.uniform_transform = glGetUniformLocation(context.shader_program, "transform");
 
-    // Set the viewport
-    glViewport(0, 0, context.window_width, context.window_height);
+    glDeleteShader(vertex_shader);
+    glDeleteShader(fragment_shader);
 }
 
 void toggle_fullscreen(Context& context) {
-    if (context.is_fullscreen) {
-        SDL_SetWindowFullscreen(context.window, 0); // Disable fullscreen
-        SDL_SetWindowSize(context.window, context.window_width, context.window_height);
-    } else {
-        SDL_SetWindowFullscreen(context.window, SDL_WINDOW_FULLSCREEN_DESKTOP); // Enable fullscreen
-    }
     context.is_fullscreen = !context.is_fullscreen;
+    if (context.is_fullscreen) {
+        SDL_SetWindowFullscreen(context.window, SDL_WINDOW_FULLSCREEN_DESKTOP);
+    } else {
+        SDL_SetWindowFullscreen(context.window, 0);
+    }
+}
+
+void read_file(const char* path, std::string& content) {
+    std::ifstream file(path);
+    if (file) {
+        std::stringstream buffer;
+        buffer << file.rdbuf();
+        content = buffer.str();
+    } else {
+        std::cerr << "Failed to read file: " << path << std::endl;
+    }
+}
+
+void compile_shader_from_file(const char* path, GLuint shader) {
+    std::string source;
+    read_file(path, source);
+    const char* source_c_str = source.c_str();
+    glShaderSource(shader, 1, &source_c_str, nullptr);
+    glCompileShader(shader);
+
+    int success;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
+    if (!success) {
+        char info_log[512];
+        glGetShaderInfoLog(shader, 512, nullptr, info_log);
+        std::cerr << "ERROR::SHADER::COMPILATION_FAILED\n" << info_log << std::endl;
+    }
+}
+
+void link_shader_program(unsigned int program) {
+    glLinkProgram(program);
+
+    int success;
+    glGetProgramiv(program, GL_LINK_STATUS, &success);
+    if (!success) {
+        char info_log[512];
+        glGetProgramInfoLog(program, 512, nullptr, info_log);
+        std::cerr << "ERROR::PROGRAM::LINKING_FAILED\n" << info_log << std::endl;
+    }
 }
 
 void update_fps(Context& context) {
-    static double last_update_time = 0;
-    static int frames_since_last_update = 0;
+    static Uint32 last_time = SDL_GetTicks();
+    static int frames = 0;
+    Uint32 current_time = SDL_GetTicks();
+    frames++;
 
-    double now = SDL_GetTicks() / 1000.0;
-    frames_since_last_update++;
-
-    if (now - last_update_time > 0.25) {
-        double fps = frames_since_last_update / (now - last_update_time);
-
-        std::string title = "Cube (" + std::to_string(fps) + " FPS)";
+    if (current_time - last_time >= 1000) {
+        float fps = frames / ((current_time - last_time) / 1000.0f);
+        std::string title = "Cube - FPS: " + std::to_string(fps);
         SDL_SetWindowTitle(context.window, title.c_str());
 
-        last_update_time = now;
-        frames_since_last_update = 0;
+        frames = 0;
+        last_time = current_time;
     }
-}
-
-float animation(float duration) {
-    Uint32 ms_time = SDL_GetTicks();
-    Uint32 ms_duration = duration * 1000;
-    float ms_position = ms_time % ms_duration;
-
-    return ms_position / ms_duration;
-}
-
-void render(Context& context) {
-    update_fps(context);
-
-    // Clear
-    glClearColor(0.1f, 0.12f, 0.2f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-    glUseProgram(context.shader_program);
-
-    mat4f transform = mat4f_identity();
-    transform = mat4f_multiply(transform, mat4f_perspective());
-    transform = mat4f_multiply(transform, mat4f_translation(0, 0, -3));
-    transform = mat4f_multiply(transform, mat4f_rotate_x(0.15f * pi));
-    transform = mat4f_multiply(transform, mat4f_rotate_y(2 * pi * animation(4)));
-    glUniformMatrix4fv(context.uniform_transform, 1, GL_FALSE, mat4f_gl(&transform));
-
-    glBindVertexArray(context.vao);
-    glDrawElements(GL_TRIANGLES, triangles * 3, GL_UNSIGNED_SHORT, nullptr);
 }
