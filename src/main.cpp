@@ -68,8 +68,8 @@ void handleInput(const SDL_Event& event) {
         float velocity = speed * deltaTime;
         if (state[SDL_SCANCODE_W]) position = vec3f_add(position, vec3f_scale(front, velocity));
         if (state[SDL_SCANCODE_S]) position = vec3f_subtract(position, vec3f_scale(front, velocity));
-        if (state[SDL_SCANCODE_A]) position = vec3f_subtract(position, vec3f_scale(right, velocity));
-        if (state[SDL_SCANCODE_D]) position = vec3f_add(position, vec3f_scale(right, velocity));
+        if (state[SDL_SCANCODE_D]) position = vec3f_subtract(position, vec3f_scale(right, velocity));
+        if (state[SDL_SCANCODE_A]) position = vec3f_add(position, vec3f_scale(right, velocity));
     }
 
     mat4f getViewMatrix() const {
