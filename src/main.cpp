@@ -15,18 +15,20 @@ struct Context {
     int window_width = 800;
     int window_height = 800;
     bool is_fullscreen = false;
+    bool freeCamMode = true;  // Start in FreeCam mode
+    float cubeRotationAngle = 0.0f;  // Track cube's rotation angle
 };
 
 class FreeCam {
 public:
     FreeCam(float fov, float aspect, float near, float far)
-        : position({0.0f, 0.0f, 3.0f}), front({0.0f, 0.0f, -1.0f}), up({0.0f, 1.0f, 0.0f}),
+        : position({0.0f, 0.0f, 5.0f}), front({0.0f, 0.0f, -1.0f}), up({0.0f, 1.0f, 0.0f}),
           yaw(-90.0f), pitch(0.0f), speed(2.5f), sensitivity(0.1f),
           fov(fov), aspect(aspect), near(near), far(far), rightMouseHeld(false) {
         right = vec3f_cross(front, up);
     }
 
-void handleInput(const SDL_Event& event) {
+    void handleInput(const SDL_Event& event) {
         if (event.type == SDL_MOUSEBUTTONDOWN && event.button.button == SDL_BUTTON_RIGHT) {
             rightMouseHeld = true;
             SDL_SetRelativeMouseMode(SDL_TRUE); // Capture mouse
@@ -38,29 +40,23 @@ void handleInput(const SDL_Event& event) {
         if (event.type == SDL_MOUSEMOTION && rightMouseHeld) {
             float xOffset = event.motion.xrel * sensitivity;
             float yOffset = event.motion.yrel * sensitivity;
-    
-            // Invert xOffset to correct camera movement
+
             yaw -= xOffset;
-            // Optional: Invert yOffset if you find pitch movement counterintuitive
             pitch -= yOffset;
-    
-            // Clamp pitch to avoid gimbal lock
+
             if (pitch > 89.0f) pitch = 89.0f;
             if (pitch < -89.0f) pitch = -89.0f;
-    
-            // Update front vector
+
             vec3f direction;
             direction.x = cosf(yaw * pi / 180.0f) * cosf(pitch * pi / 180.0f);
             direction.y = sinf(pitch * pi / 180.0f);
             direction.z = sinf(yaw * pi / 180.0f) * cosf(pitch * pi / 180.0f);
             front = vec3f_normalize(direction);
-    
-            // Recalculate right and up vectors
-            right = vec3f_normalize(vec3f_cross(front, {0.0f, 1.0f, 0.0f}));
+
+            right = vec3f_normalize(vec3f_cross(front, up));
             up = vec3f_cross(right, front);
         }
     }
-    
 
     void update(float deltaTime) {
         const Uint8* state = SDL_GetKeyboardState(nullptr);
@@ -153,6 +149,11 @@ int main() {
                     toggle_fullscreen(context);
                 } else if (event.key.keysym.sym == SDLK_ESCAPE) {
                     running = false;
+                } else if (event.key.keysym.sym == SDLK_F11) {
+                    context.freeCamMode = !context.freeCamMode;
+                    if (!context.freeCamMode) {
+                        SDL_SetRelativeMouseMode(SDL_FALSE);
+                    }
                 }
             } else if (event.type == SDL_WINDOWEVENT) {
                 if (event.window.event == SDL_WINDOWEVENT_RESIZED) {
@@ -162,17 +163,26 @@ int main() {
                     freeCam = FreeCam(45.0f, (float)context.window_width / (float)context.window_height, 0.1f, 100.0f);
                 }
             }
-            freeCam.handleInput(event);
+
+            if (context.freeCamMode) {
+                freeCam.handleInput(event);
+            }
         }
 
         Uint32 currentTime = SDL_GetTicks();
         float deltaTime = (currentTime - lastTime) / 1000.0f;
         lastTime = currentTime;
 
-        freeCam.update(deltaTime);
+        if (context.freeCamMode) {
+            freeCam.update(deltaTime);
+        } else {
+            context.cubeRotationAngle += 50.0f * deltaTime;
+            if (context.cubeRotationAngle > 360.0f) {
+                context.cubeRotationAngle -= 360.0f;
+            }
+        }
 
         render(context, freeCam);
-
         SDL_GL_SwapWindow(window);
     }
 
@@ -185,51 +195,54 @@ int main() {
 void render(Context& context, FreeCam& freeCam) {
     update_fps(context);
 
-    // Clear
     glClearColor(0.1f, 0.12f, 0.2f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     glUseProgram(context.shader_program);
 
-    // Use free camera matrices
-    mat4f view = freeCam.getViewMatrix();
-    mat4f projection = freeCam.getProjectionMatrix();
-    mat4f transform = mat4f_multiply(projection, view);
+    mat4f transform;
+
+    if (context.freeCamMode) {
+        mat4f view = freeCam.getViewMatrix();
+        mat4f projection = freeCam.getProjectionMatrix();
+        transform = mat4f_multiply(projection, view);
+    } else {
+        // Set the camera position outside the cube for rotation mode
+        vec3f cameraPos = {0.0f, 0.0f, 5.0f};  // Adjust the z position as needed
+        mat4f view = mat4f_look_at(cameraPos, {0.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f});
+        mat4f projection = mat4f_perspective(45.0f, (float)context.window_width / (float)context.window_height, 0.1f, 100.0f);
+
+        // Combine projection and view matrices
+        transform = mat4f_multiply(projection, view);
+
+        // Prepare the model matrix for the cube
+        mat4f model = mat4f_identity();
+        mat4f rotation = mat4f_rotate_y(context.cubeRotationAngle * pi / 180.0f);
+        model = mat4f_multiply(model, rotation);
+
+        // Combine model with the transform
+        transform = mat4f_multiply(transform, model);
+    }
 
     glUniformMatrix4fv(context.uniform_transform, 1, GL_FALSE, mat4f_gl(&transform));
-
     glBindVertexArray(context.vao);
 
-    // Define the indices
     unsigned short indices[] = {
-        // Front face
         0, 1, 2,
         2, 3, 0,
-
-        // Top face
         1, 5, 6,
         6, 2, 1,
-
-        // Back face
         5, 4, 7,
         7, 6, 5,
-
-        // Bottom face
         4, 0, 3,
         3, 7, 4,
-
-        // Left face
         1, 5, 4,
         4, 0, 1,
-
-        // Right face
         3, 2, 6,
         6, 7, 3,
     };
 
-    // Calculate number of indices
     int numIndices = sizeof(indices) / sizeof(indices[0]);
-
     glDrawElements(GL_TRIANGLES, numIndices, GL_UNSIGNED_SHORT, nullptr);
 }
 
@@ -237,19 +250,15 @@ void render(Context& context, FreeCam& freeCam) {
 void initialize(Context& context) {
     glEnable(GL_DEPTH_TEST);
 
-    // Cube vertices and colors
     float vertices[] = {
-        // Front face
-         0.5f,  0.5f,  0.5f,
-        -0.5f,  0.5f,  0.5f,
-        -0.5f, -0.5f,  0.5f,
-         0.5f, -0.5f,  0.5f,
-
-        // Back face
-         0.5f,  0.5f, -0.5f,
-        -0.5f,  0.5f, -0.5f,
-        -0.5f, -0.5f, -0.5f,
-         0.5f, -0.5f, -0.5f,
+        0.5f,  0.5f,  0.5f,
+       -0.5f,  0.5f,  0.5f,
+       -0.5f, -0.5f,  0.5f,
+        0.5f, -0.5f,  0.5f,
+        0.5f,  0.5f, -0.5f,
+       -0.5f,  0.5f, -0.5f,
+       -0.5f, -0.5f, -0.5f,
+        0.5f, -0.5f, -0.5f,
     };
 
     float vertex_colors[] = {
@@ -257,7 +266,6 @@ void initialize(Context& context) {
         1.0f, 0.9f, 0.2f,
         0.7f, 0.3f, 0.8f,
         0.5f, 0.3f, 1.0f,
-
         0.2f, 0.6f, 1.0f,
         0.6f, 1.0f, 0.3f,
         0.3f, 0.1f, 0.2f,
@@ -265,27 +273,16 @@ void initialize(Context& context) {
     };
 
     unsigned short indices[] = {
-        // Front face
         0, 1, 2,
         2, 3, 0,
-
-        // Top face
         1, 5, 6,
         6, 2, 1,
-
-        // Back face
         5, 4, 7,
         7, 6, 5,
-
-        // Bottom face
         4, 0, 3,
         3, 7, 4,
-
-        // Left face
         1, 5, 4,
         4, 0, 1,
-
-        // Right face
         3, 2, 6,
         6, 7, 3,
     };
@@ -311,12 +308,11 @@ void initialize(Context& context) {
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
 
-    // Load shaders
     unsigned int vertex_shader = glCreateShader(GL_VERTEX_SHADER);
     unsigned int fragment_shader = glCreateShader(GL_FRAGMENT_SHADER);
 
-    compile_shader_from_file("vertex.glsl", vertex_shader);
-    compile_shader_from_file("fragment.glsl", fragment_shader);
+    compile_shader_from_file("/usr/local/games/shaders/vertex.glsl", vertex_shader);
+    compile_shader_from_file("/usr/local/games/shaders/fragment.glsl", fragment_shader);
 
     context.shader_program = glCreateProgram();
     glAttachShader(context.shader_program, vertex_shader);
